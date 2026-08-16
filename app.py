@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import psycopg
 from flask import Flask, request, jsonify
 
+
 app = Flask(__name__)
 
 DATABASE_URL = os.environ["DATABASE_URL"]
@@ -24,8 +25,13 @@ def now():
 
 
 def init_db():
+
     with db() as conn:
         with conn.cursor() as cur:
+
+            # -------------------------------------------------
+            # USERS
+            # -------------------------------------------------
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -34,45 +40,59 @@ def init_db():
                 )
             """)
 
+            # -------------------------------------------------
+            # SUBSCRIPTIONS
+            # -------------------------------------------------
+
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS subscriptions (
                     subscription_id TEXT PRIMARY KEY,
+
                     user_id TEXT NOT NULL
                         REFERENCES users(user_id)
                         ON DELETE CASCADE,
-                    plan TEXT NOT NULL DEFAULT 'free',
+
+                    plan TEXT NOT NULL
+                        DEFAULT 'free',
+
                     token TEXT UNIQUE NOT NULL,
+
                     created_at TIMESTAMPTZ NOT NULL,
+
                     expires_at TIMESTAMPTZ
                 )
             """)
 
+            # -------------------------------------------------
+            # DEVICES
+            # -------------------------------------------------
+
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS devices (
                     device_id TEXT PRIMARY KEY,
+
                     user_id TEXT NOT NULL
                         REFERENCES users(user_id)
                         ON DELETE CASCADE,
 
-                    hwid TEXT NOT NULL,
+                    hwid TEXT,
 
-                    name TEXT NOT NULL,
+                    name TEXT NOT NULL
+                        DEFAULT 'Unknown device',
 
                     status TEXT NOT NULL
                         DEFAULT 'active',
 
                     last_seen TIMESTAMPTZ NOT NULL,
 
-                    created_at TIMESTAMPTZ NOT NULL,
-
-                    UNIQUE(user_id, hwid)
+                    created_at TIMESTAMPTZ NOT NULL
                 )
             """)
 
             conn.commit()
 
             # =================================================
-            # МИГРАЦИЯ СТАРОЙ ТАБЛИЦЫ DEVICES
+            # MIGRATION
             # =================================================
 
             cur.execute("""
@@ -86,23 +106,41 @@ def init_db():
                 for row in cur.fetchall()
             }
 
+            # -------------------------------------------------
+            # HWID
+            # -------------------------------------------------
+
             if "hwid" not in columns:
+
                 cur.execute("""
                     ALTER TABLE devices
                     ADD COLUMN hwid TEXT
                 """)
 
+            # -------------------------------------------------
+            # CREATED_AT
+            # -------------------------------------------------
+
             if "created_at" not in columns:
+
                 cur.execute("""
                     ALTER TABLE devices
                     ADD COLUMN created_at TIMESTAMPTZ
                 """)
+
+            # -------------------------------------------------
+            # Заполняем created_at у старых устройств
+            # -------------------------------------------------
 
             cur.execute("""
                 UPDATE devices
                 SET created_at = last_seen
                 WHERE created_at IS NULL
             """)
+
+            # -------------------------------------------------
+            # Уникальность HWID внутри одного пользователя
+            # -------------------------------------------------
 
             cur.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS
@@ -134,6 +172,7 @@ def device_limit(plan):
 # =========================================================
 
 def generate_token():
+
     return secrets.token_urlsafe(32)
 
 
@@ -153,26 +192,34 @@ def home():
 
 
 # =========================================================
-# CREATE USER
+# CREATE / GET USER
 # =========================================================
 
 @app.post("/api/users")
 def create_user():
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(
+        silent=True
+    ) or {}
 
     user_id = str(
         data.get("user_id", "")
     ).strip()
 
     if not user_id:
+
         return jsonify({
             "ok": False,
             "error": "user_id is required"
         }), 400
 
     with db() as conn:
+
         with conn.cursor() as cur:
+
+            # -------------------------------------------------
+            # Проверяем пользователя
+            # -------------------------------------------------
 
             cur.execute(
                 """
@@ -184,6 +231,10 @@ def create_user():
             )
 
             existing = cur.fetchone()
+
+            # -------------------------------------------------
+            # USER ALREADY EXISTS
+            # -------------------------------------------------
 
             if existing:
 
@@ -208,12 +259,22 @@ def create_user():
                 if sub:
 
                     subscription = {
-                        "subscription_id": sub[0],
-                        "user_id": user_id,
-                        "plan": sub[1],
-                        "token": sub[2],
+
+                        "subscription_id":
+                            sub[0],
+
+                        "user_id":
+                            user_id,
+
+                        "plan":
+                            sub[1],
+
+                        "token":
+                            sub[2],
+
                         "created_at":
                             sub[3].isoformat(),
+
                         "expires_at":
                             sub[4].isoformat()
                             if sub[4]
@@ -221,19 +282,32 @@ def create_user():
                     }
 
                 else:
+
                     subscription = None
 
                 return jsonify({
+
                     "ok": True,
+
                     "created": False,
-                    "user_id": user_id,
+
+                    "user_id":
+                        user_id,
+
                     "plan":
                         subscription["plan"]
                         if subscription
                         else "free",
+
                     "subscription":
                         subscription
                 })
+
+            # -------------------------------------------------
+            # CREATE USER
+            # -------------------------------------------------
+
+            created_at = now()
 
             cur.execute(
                 """
@@ -242,17 +316,22 @@ def create_user():
                     user_id,
                     created_at
                 )
-                VALUES (%s, %s)
+                VALUES
+                (%s, %s)
                 """,
                 (
                     user_id,
-                    now()
+                    created_at
                 )
             )
 
+            # -------------------------------------------------
+            # CREATE SUBSCRIPTION
+            # -------------------------------------------------
+
             subscription_id = uuid.uuid4().hex
+
             token = generate_token()
-            created_at = now()
 
             cur.execute(
                 """
@@ -264,7 +343,8 @@ def create_user():
                     token,
                     created_at
                 )
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES
+                (%s, %s, %s, %s, %s)
                 """,
                 (
                     subscription_id,
@@ -278,12 +358,19 @@ def create_user():
             conn.commit()
 
     return jsonify({
+
         "ok": True,
+
         "created": True,
-        "user_id": user_id,
-        "plan": "free",
+
+        "user_id":
+            user_id,
+
+        "plan":
+            "free",
 
         "subscription": {
+
             "subscription_id":
                 subscription_id,
 
@@ -313,6 +400,7 @@ def create_user():
 def get_subscription(token):
 
     with db() as conn:
+
         with conn.cursor() as cur:
 
             cur.execute(
@@ -333,6 +421,7 @@ def get_subscription(token):
             sub = cur.fetchone()
 
             if not sub:
+
                 return jsonify({
                     "ok": False,
                     "error":
@@ -340,7 +429,12 @@ def get_subscription(token):
                 }), 404
 
             user_id = sub[1]
+
             plan = sub[2]
+
+            # -------------------------------------------------
+            # ACTIVE DEVICES
+            # -------------------------------------------------
 
             cur.execute(
                 """
@@ -357,9 +451,11 @@ def get_subscription(token):
     limit = device_limit(plan)
 
     return jsonify({
+
         "ok": True,
 
         "subscription": {
+
             "subscription_id":
                 sub[0],
 
@@ -393,13 +489,15 @@ def get_subscription(token):
 
 
 # =========================================================
-# HWID REGISTER / GET DEVICE
+# HWID REGISTER
 # =========================================================
 
 @app.post("/api/hwid")
 def register_hwid():
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(
+        silent=True
+    ) or {}
 
     token = str(
         data.get("token", "")
@@ -417,25 +515,31 @@ def register_hwid():
     ).strip()
 
     if not token:
+
         return jsonify({
             "ok": False,
-            "error": "token is required"
+            "error":
+                "token is required"
         }), 400
 
     if not hwid:
+
         return jsonify({
             "ok": False,
-            "error": "hwid is required"
+            "error":
+                "hwid is required"
         }), 400
 
     if not name:
+
         name = "Unknown device"
 
     with db() as conn:
+
         with conn.cursor() as cur:
 
             # -------------------------------------------------
-            # НАХОДИМ ВЛАДЕЛЬЦА ПОДПИСКИ
+            # FIND SUBSCRIPTION OWNER
             # -------------------------------------------------
 
             cur.execute(
@@ -452,6 +556,7 @@ def register_hwid():
             sub = cur.fetchone()
 
             if not sub:
+
                 return jsonify({
                     "ok": False,
                     "error":
@@ -459,12 +564,13 @@ def register_hwid():
                 }), 404
 
             user_id = sub[0]
+
             plan = sub[1]
 
             limit = device_limit(plan)
 
             # -------------------------------------------------
-            # ПРОВЕРЯЕМ HWID
+            # FIND HWID
             # -------------------------------------------------
 
             cur.execute(
@@ -485,30 +591,49 @@ def register_hwid():
 
             existing = cur.fetchone()
 
-            # -------------------------------------------------
-            # УСТРОЙСТВО УЖЕ ЕСТЬ
-            # -------------------------------------------------
+            # =================================================
+            # EXISTING HWID
+            # =================================================
 
             if existing:
 
                 device_id = existing[0]
+
                 old_name = existing[1]
-                status = existing[2]
+
+                # ---------------------------------------------
+                # ВАЖНО:
+                #
+                # Если было:
+                #
+                # active -> removed
+                #
+                # а потом Happ снова подключился,
+                # устройство снова active.
+                # ---------------------------------------------
+
+                new_status = "active"
 
                 cur.execute(
                     """
                     UPDATE devices
                     SET
                         last_seen = %s,
-                        name = %s
+                        name = %s,
+                        status = %s
                     WHERE device_id = %s
                     """,
                     (
                         now(),
                         name or old_name,
+                        new_status,
                         device_id
                     )
                 )
+
+                # ---------------------------------------------
+                # COUNT ACTIVE
+                # ---------------------------------------------
 
                 cur.execute(
                     """
@@ -525,7 +650,9 @@ def register_hwid():
                 conn.commit()
 
                 return jsonify({
+
                     "ok": True,
+
                     "created": False,
 
                     "device_id":
@@ -541,7 +668,7 @@ def register_hwid():
                         name or old_name,
 
                     "status":
-                        status,
+                        new_status,
 
                     "active_devices":
                         active_devices,
@@ -553,11 +680,12 @@ def register_hwid():
                         active_devices > limit
                 })
 
-            # -------------------------------------------------
-            # НОВОЕ УСТРОЙСТВО
-            # -------------------------------------------------
+            # =================================================
+            # NEW HWID
+            # =================================================
 
             device_id = uuid.uuid4().hex
+
             created_at = now()
 
             cur.execute(
@@ -573,7 +701,15 @@ def register_hwid():
                     created_at
                 )
                 VALUES
-                (%s, %s, %s, %s, %s, %s, %s)
+                (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                )
                 """,
                 (
                     device_id,
@@ -585,6 +721,10 @@ def register_hwid():
                     created_at
                 )
             )
+
+            # -------------------------------------------------
+            # COUNT ACTIVE
+            # -------------------------------------------------
 
             cur.execute(
                 """
@@ -601,7 +741,9 @@ def register_hwid():
             conn.commit()
 
     return jsonify({
+
         "ok": True,
+
         "created": True,
 
         "device_id":
@@ -643,6 +785,7 @@ def hwid_status(
 ):
 
     with db() as conn:
+
         with conn.cursor() as cur:
 
             cur.execute(
@@ -652,7 +795,8 @@ def hwid_status(
                     s.plan,
                     d.device_id,
                     d.name,
-                    d.status
+                    d.status,
+                    d.hwid
                 FROM subscriptions s
                 JOIN devices d
                     ON d.user_id = s.user_id
@@ -667,25 +811,39 @@ def hwid_status(
 
             row = cur.fetchone()
 
+            # -------------------------------------------------
+            # HWID NOT REGISTERED
+            # -------------------------------------------------
+
             if not row:
 
                 return jsonify({
+
                     "ok": True,
-                    "registered": False,
+
+                    "registered":
+                        False,
+
                     "device_status":
                         "unknown"
                 })
 
             user_id = row[0]
+
             plan = row[1]
+
             device_id = row[2]
+
             name = row[3]
+
             status = row[4]
+
+            stored_hwid = row[5]
 
             limit = device_limit(plan)
 
             # -------------------------------------------------
-            # ОБНОВЛЯЕМ LAST SEEN
+            # UPDATE LAST SEEN
             # -------------------------------------------------
 
             cur.execute(
@@ -699,6 +857,10 @@ def hwid_status(
                     device_id
                 )
             )
+
+            # -------------------------------------------------
+            # COUNT ACTIVE
+            # -------------------------------------------------
 
             cur.execute(
                 """
@@ -715,6 +877,7 @@ def hwid_status(
             conn.commit()
 
     return jsonify({
+
         "ok": True,
 
         "registered":
@@ -728,6 +891,161 @@ def hwid_status(
 
         "device_id":
             device_id,
+
+        "hwid":
+            stored_hwid,
+
+        "name":
+            name,
+
+        "device_status":
+            status,
+
+        "active_devices":
+            active_devices,
+
+        "device_limit":
+            limit,
+
+        "blocked":
+            active_devices > limit
+    })
+
+
+# =========================================================
+# DEVICE STATUS BY DEVICE ID
+#
+# ЭТОТ ENDPOINT НУЖЕН ТВОЕМУ subscription.js
+# =========================================================
+
+@app.get(
+    "/api/subscriptions/<token>/device-status/<device_id>"
+)
+def device_subscription_status(
+    token,
+    device_id
+):
+
+    with db() as conn:
+
+        with conn.cursor() as cur:
+
+            # -------------------------------------------------
+            # ИЩЕМ УСТРОЙСТВО
+            # -------------------------------------------------
+
+            cur.execute(
+                """
+                SELECT
+                    s.user_id,
+                    s.plan,
+                    d.device_id,
+                    d.hwid,
+                    d.name,
+                    d.status
+                FROM subscriptions s
+                JOIN devices d
+                    ON d.user_id = s.user_id
+                WHERE s.token = %s
+                AND d.device_id = %s
+                """,
+                (
+                    token,
+                    device_id
+                )
+            )
+
+            row = cur.fetchone()
+
+            # -------------------------------------------------
+            # НЕ НАШЛИ
+            # -------------------------------------------------
+
+            if not row:
+
+                return jsonify({
+
+                    "ok": True,
+
+                    "registered":
+                        False,
+
+                    "device_status":
+                        "unknown",
+
+                    "active_devices":
+                        0,
+
+                    "device_limit":
+                        1,
+
+                    "blocked":
+                        False
+                })
+
+            user_id = row[0]
+
+            plan = row[1]
+
+            stored_device_id = row[2]
+
+            hwid = row[3]
+
+            name = row[4]
+
+            status = row[5]
+
+            limit = device_limit(plan)
+
+            # -------------------------------------------------
+            # LAST SEEN
+            # -------------------------------------------------
+
+            cur.execute(
+                """
+                UPDATE devices
+                SET last_seen = %s
+                WHERE device_id = %s
+                """,
+                (
+                    now(),
+                    stored_device_id
+                )
+            )
+
+            # -------------------------------------------------
+            # ACTIVE COUNT
+            # -------------------------------------------------
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM devices
+                WHERE user_id = %s
+                AND status = 'active'
+                """,
+                (user_id,)
+            )
+
+            active_devices = cur.fetchone()[0]
+
+            conn.commit()
+
+    return jsonify({
+
+        "ok": True,
+
+        "registered":
+            True,
+
+        "user_id":
+            user_id,
+
+        "plan":
+            plan,
+
+        "device_id":
+            stored_device_id,
 
         "hwid":
             hwid,
@@ -753,10 +1071,13 @@ def hwid_status(
 # GET DEVICES
 # =========================================================
 
-@app.get("/api/devices/<user_id>")
+@app.get(
+    "/api/devices/<user_id>"
+)
 def get_devices(user_id):
 
     with db() as conn:
+
         with conn.cursor() as cur:
 
             cur.execute(
@@ -778,6 +1099,7 @@ def get_devices(user_id):
             rows = cur.fetchall()
 
     return jsonify({
+
         "ok": True,
 
         "user_id":
@@ -786,6 +1108,7 @@ def get_devices(user_id):
         "devices": [
 
             {
+
                 "device_id":
                     row[0],
 
@@ -827,6 +1150,7 @@ def delete_device(
 ):
 
     with db() as conn:
+
         with conn.cursor() as cur:
 
             cur.execute(
@@ -850,12 +1174,15 @@ def delete_device(
     if changed == 0:
 
         return jsonify({
+
             "ok": False,
+
             "error":
                 "device not found"
         }), 404
 
     return jsonify({
+
         "ok": True,
 
         "device_id":
@@ -863,60 +1190,6 @@ def delete_device(
 
         "status":
             "removed"
-    })
-
-
-# =========================================================
-# RESTORE DEVICE
-# =========================================================
-
-@app.post(
-    "/api/devices/<user_id>/<device_id>/restore"
-)
-def restore_device(
-    user_id,
-    device_id
-):
-
-    with db() as conn:
-        with conn.cursor() as cur:
-
-            cur.execute(
-                """
-                UPDATE devices
-                SET
-                    status = 'active',
-                    last_seen = %s
-                WHERE user_id = %s
-                AND device_id = %s
-                """,
-                (
-                    now(),
-                    user_id,
-                    device_id
-                )
-            )
-
-            changed = cur.rowcount
-
-            conn.commit()
-
-    if changed == 0:
-
-        return jsonify({
-            "ok": False,
-            "error":
-                "device not found"
-        }), 404
-
-    return jsonify({
-        "ok": True,
-
-        "device_id":
-            device_id,
-
-        "status":
-            "active"
     })
 
 
@@ -930,6 +1203,7 @@ def restore_device(
 def subscription_status(token):
 
     with db() as conn:
+
         with conn.cursor() as cur:
 
             cur.execute(
@@ -948,12 +1222,15 @@ def subscription_status(token):
             if not sub:
 
                 return jsonify({
+
                     "ok": False,
+
                     "error":
                         "subscription not found"
                 }), 404
 
             user_id = sub[0]
+
             plan = sub[1]
 
             limit = device_limit(plan)
@@ -971,6 +1248,7 @@ def subscription_status(token):
             active_devices = cur.fetchone()[0]
 
     return jsonify({
+
         "ok": True,
 
         "user_id":
@@ -1014,12 +1292,15 @@ def change_plan(user_id):
     ):
 
         return jsonify({
+
             "ok": False,
+
             "error":
                 "plan must be free, vip or dev"
         }), 400
 
     with db() as conn:
+
         with conn.cursor() as cur:
 
             cur.execute(
@@ -1041,12 +1322,15 @@ def change_plan(user_id):
     if changed == 0:
 
         return jsonify({
+
             "ok": False,
+
             "error":
                 "subscription not found"
         }), 404
 
     return jsonify({
+
         "ok": True,
 
         "user_id":
@@ -1079,4 +1363,4 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=port
-            )
+                        )
