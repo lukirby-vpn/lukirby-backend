@@ -33,7 +33,8 @@ def init_db():
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS subscriptions (
                     subscription_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL REFERENCES users(user_id)
+                    user_id TEXT NOT NULL
+                        REFERENCES users(user_id)
                         ON DELETE CASCADE,
                     plan TEXT NOT NULL DEFAULT 'free',
                     token TEXT UNIQUE NOT NULL,
@@ -45,7 +46,8 @@ def init_db():
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS devices (
                     device_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL REFERENCES users(user_id)
+                    user_id TEXT NOT NULL
+                        REFERENCES users(user_id)
                         ON DELETE CASCADE,
                     name TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'active',
@@ -70,6 +72,10 @@ def generate_token():
     return secrets.token_urlsafe(32)
 
 
+# =========================================================
+# HOME
+# =========================================================
+
 @app.get("/")
 def home():
     return jsonify({
@@ -80,11 +86,12 @@ def home():
 
 
 # =========================================================
-# USER
+# CREATE USER
 # =========================================================
 
 @app.post("/api/users")
 def create_user():
+
     data = request.get_json(silent=True) or {}
 
     user_id = str(
@@ -132,17 +139,20 @@ def create_user():
                 sub = cur.fetchone()
 
                 if sub:
+
                     subscription = {
                         "subscription_id": sub[0],
                         "user_id": user_id,
                         "plan": sub[1],
                         "token": sub[2],
-                        "created_at": sub[3].isoformat(),
+                        "created_at":
+                            sub[3].isoformat(),
                         "expires_at":
                             sub[4].isoformat()
                             if sub[4]
                             else None
                     }
+
                 else:
                     subscription = None
 
@@ -164,14 +174,16 @@ def create_user():
                 (user_id, created_at)
                 VALUES (%s, %s)
                 """,
-                (user_id, now())
+                (
+                    user_id,
+                    now()
+                )
             )
 
-            subscription_id = (
-                uuid.uuid4().hex
-            )
-
+            subscription_id = uuid.uuid4().hex
             token = generate_token()
+
+            created_at = now()
 
             cur.execute(
                 """
@@ -190,7 +202,7 @@ def create_user():
                     user_id,
                     "free",
                     token,
-                    now()
+                    created_at
                 )
             )
 
@@ -204,18 +216,22 @@ def create_user():
         "subscription": {
             "subscription_id":
                 subscription_id,
-            "user_id": user_id,
-            "plan": "free",
-            "token": token,
+            "user_id":
+                user_id,
+            "plan":
+                "free",
+            "token":
+                token,
             "created_at":
-                now().isoformat(),
-            "expires_at": None
+                created_at.isoformat(),
+            "expires_at":
+                None
         }
     })
 
 
 # =========================================================
-# SUBSCRIPTION
+# GET SUBSCRIPTION
 # =========================================================
 
 @app.get("/api/subscriptions/<token>")
@@ -248,18 +264,8 @@ def get_subscription(token):
                         "subscription not found"
                 }), 404
 
-            subscription = {
-                "subscription_id": sub[0],
-                "user_id": sub[1],
-                "plan": sub[2],
-                "token": sub[3],
-                "created_at":
-                    sub[4].isoformat(),
-                "expires_at":
-                    sub[5].isoformat()
-                    if sub[5]
-                    else None
-            }
+            user_id = sub[1]
+            plan = sub[2]
 
             cur.execute(
                 """
@@ -268,35 +274,48 @@ def get_subscription(token):
                 WHERE user_id = %s
                 AND status = 'active'
                 """,
-                (sub[1],)
+                (user_id,)
             )
 
             active_devices = cur.fetchone()[0]
 
-    limit = device_limit(
-        subscription["plan"]
-    )
+    limit = device_limit(plan)
 
     return jsonify({
         "ok": True,
-        "subscription": subscription,
-        "active_devices": active_devices,
-        "device_limit": limit,
+        "subscription": {
+            "subscription_id":
+                sub[0],
+            "user_id":
+                user_id,
+            "plan":
+                plan,
+            "token":
+                sub[3],
+            "created_at":
+                sub[4].isoformat(),
+            "expires_at":
+                sub[5].isoformat()
+                if sub[5]
+                else None
+        },
+        "active_devices":
+            active_devices,
+        "device_limit":
+            limit,
         "blocked":
             active_devices > limit
     })
 
 
 # =========================================================
-# DEVICE ADD
+# ADD DEVICE
 # =========================================================
 
 @app.post("/api/devices")
 def add_device():
 
-    data = request.get_json(
-        silent=True
-    ) or {}
+    data = request.get_json(silent=True) or {}
 
     token = str(
         data.get("token", "")
@@ -345,6 +364,7 @@ def add_device():
             limit = device_limit(plan)
 
             device_id = uuid.uuid4().hex
+            created_at = now()
 
             cur.execute(
                 """
@@ -363,11 +383,9 @@ def add_device():
                     user_id,
                     name,
                     "active",
-                    now()
+                    created_at
                 )
             )
-
-            conn.commit()
 
             cur.execute(
                 """
@@ -381,21 +399,29 @@ def add_device():
 
             active_devices = cur.fetchone()[0]
 
+            conn.commit()
+
     return jsonify({
         "ok": True,
-        "device_id": device_id,
-        "user_id": user_id,
-        "name": name,
-        "status": "active",
-        "active_devices": active_devices,
-        "device_limit": limit,
+        "device_id":
+            device_id,
+        "user_id":
+            user_id,
+        "name":
+            name,
+        "status":
+            "active",
+        "active_devices":
+            active_devices,
+        "device_limit":
+            limit,
         "blocked":
             active_devices > limit
     })
 
 
 # =========================================================
-# DEVICES LIST
+# GET DEVICES
 # =========================================================
 
 @app.get("/api/devices/<user_id>")
@@ -422,12 +448,16 @@ def get_devices(user_id):
 
     return jsonify({
         "ok": True,
-        "user_id": user_id,
+        "user_id":
+            user_id,
         "devices": [
             {
-                "device_id": row[0],
-                "name": row[1],
-                "status": row[2],
+                "device_id":
+                    row[0],
+                "name":
+                    row[1],
+                "status":
+                    row[2],
                 "last_seen":
                     row[3].isoformat()
             }
@@ -437,7 +467,7 @@ def get_devices(user_id):
 
 
 # =========================================================
-# DEVICE DELETE / REMOVE
+# REMOVE DEVICE
 # =========================================================
 
 @app.delete(
@@ -471,18 +501,21 @@ def delete_device(
     if changed == 0:
         return jsonify({
             "ok": False,
-            "error": "device not found"
+            "error":
+                "device not found"
         }), 404
 
     return jsonify({
         "ok": True,
-        "device_id": device_id,
-        "status": "removed"
+        "device_id":
+            device_id,
+        "status":
+            "removed"
     })
 
 
 # =========================================================
-# DEVICE RESTORE
+# RESTORE DEVICE
 # =========================================================
 
 @app.post(
@@ -499,7 +532,8 @@ def restore_device(
             cur.execute(
                 """
                 UPDATE devices
-                SET status = 'active',
+                SET
+                    status = 'active',
                     last_seen = %s
                 WHERE user_id = %s
                 AND device_id = %s
@@ -518,13 +552,16 @@ def restore_device(
     if changed == 0:
         return jsonify({
             "ok": False,
-            "error": "device not found"
+            "error":
+                "device not found"
         }), 404
 
     return jsonify({
         "ok": True,
-        "device_id": device_id,
-        "status": "active"
+        "device_id":
+            device_id,
+        "status":
+            "active"
     })
 
 
@@ -542,7 +579,9 @@ def subscription_status(token):
 
             cur.execute(
                 """
-                SELECT user_id, plan
+                SELECT
+                    user_id,
+                    plan
                 FROM subscriptions
                 WHERE token = %s
                 """,
@@ -560,6 +599,7 @@ def subscription_status(token):
 
             user_id = sub[0]
             plan = sub[1]
+
             limit = device_limit(plan)
 
             cur.execute(
@@ -576,10 +616,95 @@ def subscription_status(token):
 
     return jsonify({
         "ok": True,
-        "user_id": user_id,
-        "plan": plan,
-        "active_devices": active_devices,
-        "device_limit": limit,
+        "user_id":
+            user_id,
+        "plan":
+            plan,
+        "active_devices":
+            active_devices,
+        "device_limit":
+            limit,
+        "blocked":
+            active_devices > limit
+    })
+
+
+# =========================================================
+# SPECIFIC DEVICE SUBSCRIPTION STATUS
+# =========================================================
+
+@app.get(
+    "/api/subscriptions/<token>/device-status/<device_id>"
+)
+def device_subscription_status(
+    token,
+    device_id
+):
+
+    with db() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute(
+                """
+                SELECT
+                    s.user_id,
+                    s.plan,
+                    d.device_id,
+                    d.name,
+                    d.status
+                FROM subscriptions s
+                JOIN devices d
+                    ON d.user_id = s.user_id
+                WHERE s.token = %s
+                AND d.device_id = %s
+                """,
+                (
+                    token,
+                    device_id
+                )
+            )
+
+            row = cur.fetchone()
+
+            if not row:
+                return jsonify({
+                    "ok": False,
+                    "error":
+                        "device not found"
+                }), 404
+
+            user_id = row[0]
+            plan = row[1]
+            device_status = row[4]
+
+            limit = device_limit(plan)
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM devices
+                WHERE user_id = %s
+                AND status = 'active'
+                """,
+                (user_id,)
+            )
+
+            active_devices = cur.fetchone()[0]
+
+    return jsonify({
+        "ok": True,
+        "user_id":
+            user_id,
+        "plan":
+            plan,
+        "device_id":
+            device_id,
+        "device_status":
+            device_status,
+        "active_devices":
+            active_devices,
+        "device_limit":
+            limit,
         "blocked":
             active_devices > limit
     })
@@ -641,17 +766,24 @@ def change_plan(user_id):
 
     return jsonify({
         "ok": True,
-        "user_id": user_id,
-        "plan": plan,
+        "user_id":
+            user_id,
+        "plan":
+            plan,
         "device_limit":
             device_limit(plan)
     })
 
 
+# =========================================================
+# START
+# =========================================================
+
 init_db()
 
 
 if __name__ == "__main__":
+
     port = int(
         os.environ.get(
             "PORT",
@@ -662,4 +794,4 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=port
-        )
+    )
