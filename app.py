@@ -1,6 +1,6 @@
 import os
 import secrets
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import psycopg
 from flask import Flask, request, jsonify
@@ -54,19 +54,41 @@ def init_db():
 def get_user(user_id):
     with db() as conn:
         return conn.execute(
-            "SELECT * FROM users WHERE user_id = %s",
+            """
+            SELECT user_id, plan, created_at
+            FROM users
+            WHERE user_id = %s
+            """,
             (user_id,)
         ).fetchone()
 
 
-def create_subscription(user_id, plan="free"):
-    subscription_id = secrets.token_urlsafe(16)
-    token = secrets.token_urlsafe(32)
+def subscription_to_dict(row):
+    if not row:
+        return None
 
+    return {
+        "subscription_id": row[0],
+        "user_id": row[1],
+        "token": row[2],
+        "plan": row[3],
+        "created_at": row[4].isoformat() if row[4] else None,
+        "expires_at": row[5].isoformat() if row[5] else None
+    }
+
+
+def create_subscription(user_id, plan="free"):
     with db() as conn:
+
         existing = conn.execute(
             """
-            SELECT *
+            SELECT
+                subscription_id,
+                user_id,
+                token,
+                plan,
+                created_at,
+                expires_at
             FROM subscriptions
             WHERE user_id = %s
             """,
@@ -74,7 +96,11 @@ def create_subscription(user_id, plan="free"):
         ).fetchone()
 
         if existing:
-            return dict(existing)
+            return subscription_to_dict(existing)
+
+        subscription_id = secrets.token_urlsafe(16)
+        token = secrets.token_urlsafe(32)
+        created_at = now()
 
         conn.execute(
             """
@@ -94,19 +120,19 @@ def create_subscription(user_id, plan="free"):
                 user_id,
                 token,
                 plan,
-                now(),
+                created_at,
                 None
             )
         )
 
-    return {
-        "subscription_id": subscription_id,
-        "user_id": user_id,
-        "token": token,
-        "plan": plan,
-        "created_at": now().isoformat(),
-        "expires_at": None
-    }
+        return {
+            "subscription_id": subscription_id,
+            "user_id": user_id,
+            "token": token,
+            "plan": plan,
+            "created_at": created_at.isoformat(),
+            "expires_at": None
+        }
 
 
 @app.get("/")
@@ -135,32 +161,41 @@ def create_user():
     if existing:
         subscription = create_subscription(
             user_id,
-            existing["plan"]
+            existing[1]
         )
 
         return jsonify({
             "ok": True,
             "user_id": user_id,
-            "plan": existing["plan"],
+            "plan": existing[1],
             "created": False,
             "subscription": subscription
         })
+
+    created_at = now()
 
     with db() as conn:
         conn.execute(
             """
             INSERT INTO users
-            (user_id, plan, created_at)
+            (
+                user_id,
+                plan,
+                created_at
+            )
             VALUES (%s, %s, %s)
             """,
             (
                 user_id,
                 "free",
-                now()
+                created_at
             )
         )
 
-    subscription = create_subscription(user_id, "free")
+    subscription = create_subscription(
+        user_id,
+        "free"
+    )
 
     return jsonify({
         "ok": True,
@@ -168,6 +203,55 @@ def create_user():
         "plan": "free",
         "created": True,
         "subscription": subscription
+    })
+
+
+@app.get("/api/users/<user_id>")
+def get_user_info(user_id):
+    user = get_user(user_id)
+
+    if not user:
+        return jsonify({
+            "ok": False,
+            "error": "user not found"
+        }), 404
+
+    return jsonify({
+        "ok": True,
+        "user_id": user[0],
+        "plan": user[1],
+        "created_at": user[2].isoformat()
+            if user[2] else None
+    })
+
+
+@app.get("/api/users/<user_id>/subscription")
+def get_user_subscription(user_id):
+    with db() as conn:
+        subscription = conn.execute(
+            """
+            SELECT
+                subscription_id,
+                user_id,
+                token,
+                plan,
+                created_at,
+                expires_at
+            FROM subscriptions
+            WHERE user_id = %s
+            """,
+            (user_id,)
+        ).fetchone()
+
+    if not subscription:
+        return jsonify({
+            "ok": False,
+            "error": "subscription not found"
+        }), 404
+
+    return jsonify({
+        "ok": True,
+        "subscription": subscription_to_dict(subscription)
     })
 
 
@@ -195,58 +279,34 @@ def get_subscription(token):
             "error": "subscription not found"
         }), 404
 
-    subscription = dict(subscription)
-
     return jsonify({
         "ok": True,
-        "subscription": subscription
-    })
-
-
-@app.get("/api/users/<user_id>/subscription")
-def user_subscription(user_id):
-    with db() as conn:
-        subscription = conn.execute(
-            """
-            SELECT
-                subscription_id,
-                user_id,
-                token,
-                plan,
-                created_at,
-                expires_at
-            FROM subscriptions
-            WHERE user_id = %s
-            """,
-            (user_id,)
-        ).fetchone()
-
-    if not subscription:
-        return jsonify({
-            "ok": False,
-            "error": "subscription not found"
-        }), 404
-
-    return jsonify({
-        "ok": True,
-        "subscription": dict(subscription)
+        "subscription": subscription_to_dict(subscription)
     })
 
 
 @app.post("/api/users/<user_id>/plan")
 def change_plan(user_id):
     data = request.get_json(silent=True) or {}
-    plan = str(data.get("plan", "")).lower()
 
-    if plan not in ("free", "vip"):
+    plan = str(
+        data.get("plan", "")
+    ).lower().strip()
+
+    if plan not in ("free", "vip", "dev"):
         return jsonify({
             "ok": False,
-            "error": "plan must be free or vip"
+            "error": "plan must be free, vip or dev"
         }), 400
 
     with db() as conn:
+
         user = conn.execute(
-            "SELECT * FROM users WHERE user_id = %s",
+            """
+            SELECT user_id
+            FROM users
+            WHERE user_id = %s
+            """,
             (user_id,)
         ).fetchone()
 
@@ -262,7 +322,10 @@ def change_plan(user_id):
             SET plan = %s
             WHERE user_id = %s
             """,
-            (plan, user_id)
+            (
+                plan,
+                user_id
+            )
         )
 
         conn.execute(
@@ -271,7 +334,10 @@ def change_plan(user_id):
             SET plan = %s
             WHERE user_id = %s
             """,
-            (plan, user_id)
+            (
+                plan,
+                user_id
+            )
         )
 
     return jsonify({
@@ -281,12 +347,27 @@ def change_plan(user_id):
     })
 
 
+def get_device_limit(plan):
+    limits = {
+        "free": 1,
+        "vip": 5,
+        "dev": 20
+    }
+
+    return limits.get(plan, 1)
+
+
 @app.post("/api/devices")
 def add_device():
     data = request.get_json(silent=True) or {}
 
-    user_id = str(data.get("user_id", "")).strip()
-    name = str(data.get("name", "Unknown device")).strip()
+    user_id = str(
+        data.get("user_id", "")
+    ).strip()
+
+    name = str(
+        data.get("name", "Unknown device")
+    ).strip()
 
     if not user_id:
         return jsonify({
@@ -302,14 +383,11 @@ def add_device():
             "error": "user not found"
         }), 404
 
-    limits = {
-        "free": 1,
-        "vip": 5
-    }
-
-    limit = limits.get(user["plan"], 1)
+    plan = user[1]
+    limit = get_device_limit(plan)
 
     with db() as conn:
+
         count = conn.execute(
             """
             SELECT COUNT(*)
@@ -323,10 +401,12 @@ def add_device():
             return jsonify({
                 "ok": False,
                 "error": "device limit reached",
-                "limit": limit
+                "limit": limit,
+                "active_devices": count
             }), 403
 
         device_id = secrets.token_hex(16)
+        last_seen = now()
 
         conn.execute(
             """
@@ -343,7 +423,7 @@ def add_device():
                 device_id,
                 user_id,
                 name,
-                now()
+                last_seen
             )
         )
 
@@ -352,13 +432,16 @@ def add_device():
         "device_id": device_id,
         "user_id": user_id,
         "name": name,
-        "limit": limit
+        "plan": plan,
+        "limit": limit,
+        "active_devices": count + 1
     })
 
 
 @app.get("/api/devices/<user_id>")
 def get_devices(user_id):
     with db() as conn:
+
         devices = conn.execute(
             """
             SELECT
@@ -375,20 +458,60 @@ def get_devices(user_id):
     return jsonify({
         "ok": True,
         "user_id": user_id,
-        "devices": [dict(device) for device in devices]
+        "devices": [
+            {
+                "device_id": device[0],
+                "name": device[1],
+                "last_seen": device[2].isoformat()
+                    if device[2] else None
+            }
+            for device in devices
+        ]
+    })
+
+
+@app.post("/api/devices/<device_id>/heartbeat")
+def device_heartbeat(device_id):
+    with db() as conn:
+
+        result = conn.execute(
+            """
+            UPDATE devices
+            SET last_seen = %s
+            WHERE device_id = %s
+            """,
+            (
+                now(),
+                device_id
+            )
+        )
+
+    if result.rowcount == 0:
+        return jsonify({
+            "ok": False,
+            "error": "device not found"
+        }), 404
+
+    return jsonify({
+        "ok": True,
+        "device_id": device_id
     })
 
 
 @app.delete("/api/devices/<user_id>/<device_id>")
 def delete_device(user_id, device_id):
     with db() as conn:
+
         result = conn.execute(
             """
             DELETE FROM devices
             WHERE user_id = %s
             AND device_id = %s
             """,
-            (user_id, device_id)
+            (
+                user_id,
+                device_id
+            )
         )
 
     if result.rowcount == 0:
@@ -403,11 +526,62 @@ def delete_device(user_id, device_id):
     })
 
 
+@app.get("/api/users/<user_id>/devices")
+def user_devices(user_id):
+    with db() as conn:
+
+        devices = conn.execute(
+            """
+            SELECT
+                device_id,
+                name,
+                last_seen
+            FROM devices
+            WHERE user_id = %s
+            ORDER BY last_seen DESC
+            """,
+            (user_id,)
+        ).fetchall()
+
+    user = get_user(user_id)
+
+    if not user:
+        return jsonify({
+            "ok": False,
+            "error": "user not found"
+        }), 404
+
+    plan = user[1]
+    limit = get_device_limit(plan)
+
+    return jsonify({
+        "ok": True,
+        "user_id": user_id,
+        "plan": plan,
+        "limit": limit,
+        "active_devices": len(devices),
+        "devices": [
+            {
+                "device_id": device[0],
+                "name": device[1],
+                "last_seen": device[2].isoformat()
+                    if device[2] else None
+            }
+            for device in devices
+        ]
+    })
+
+
 init_db()
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
+    port = int(
+        os.environ.get(
+            "PORT",
+            10000
+        )
+    )
 
     app.run(
         host="0.0.0.0",
