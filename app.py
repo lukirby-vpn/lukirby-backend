@@ -173,6 +173,7 @@ def home():
 
 @app.get("/ping")
 def ping():
+
     return "OK", 200
 
 
@@ -561,21 +562,17 @@ def register_hwid():
                 old_name = existing[1]
                 old_status = existing[2]
 
-                # -----------------------------------------
-                # Р’РђР–РќРћ: РќР• СЂРµР°РєС‚РёРІРёСЂСѓРµРј Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё.
+                # -------------------------------------------------
+                # НЕ РЕАКТИВИРУЕМ REMOVED АВТОМАТИЧЕСКИ.
                 #
-                # Happ РґС‘СЂРіР°РµС‚ /api/hwid РїСЂРё РљРђР–Р”РћРњ РѕРїСЂРѕСЃРµ
-                # РїРѕРґРїРёСЃРєРё. Р•СЃР»Рё С‚СѓС‚ СЃС‚Р°РІРёС‚СЊ status='active'
-                # Р±РµР·СѓСЃР»РѕРІРЅРѕ, С‚Рѕ СѓРґР°Р»С‘РЅРЅРѕРµ СѓСЃС‚СЂРѕР№СЃС‚РІРѕ
-                # СЂРµР°РєС‚РёРІРёСЂСѓРµС‚СЃСЏ СЂР°РЅСЊС€Рµ, С‡РµРј СѓСЃРїРµРІР°РµС‚
-                # СЃСЂР°Р±РѕС‚Р°С‚СЊ РїСЂРѕРІРµСЂРєР° "removed" РІ
-                # subscription.js вЂ” С‚Рѕ РµСЃС‚СЊ СѓРґР°Р»РµРЅРёРµ
-                # РёР· Р±РѕС‚Р° РЅРµ СЂР°Р±РѕС‚Р°РµС‚ РІРѕРѕР±С‰Рµ.
+                # Если устройство удалили через бота,
+                # повторный запрос /api/hwid НЕ возвращает
+                # ему active.
                 #
-                # РЎС‚Р°С‚СѓСЃ РјРµРЅСЏРµС‚СЃСЏ С‚РѕР»СЊРєРѕ СЏРІРЅРѕ:
-                # С‡РµСЂРµР· DELETE /api/devices/... (СѓРґР°Р»РµРЅРёРµ)
-                # РёР»Рё С‡РµСЂРµР· POST .../restore (РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёРµ).
-                # -----------------------------------------
+                # Восстановление выполняется отдельно через:
+                #
+                # POST /api/devices/<user_id>/<device_id>/restore
+                # -------------------------------------------------
 
                 cur.execute("""
                     UPDATE devices
@@ -918,6 +915,138 @@ def delete_device(user_id, device_id):
 
         "status":
             "removed"
+    })
+
+
+# =========================================================
+# RESTORE DEVICE
+# =========================================================
+#
+# Восстанавливает удалённое устройство.
+#
+# Используется ботом, когда пользователь:
+# - снова получил VIP;
+# - хочет вернуть устройство;
+# - или администратор решил разблокировать устройство.
+#
+# После restore устройство снова status='active'.
+#
+# =========================================================
+
+@app.post(
+    "/api/devices/<user_id>/<device_id>/restore"
+)
+def restore_device(user_id, device_id):
+
+    with db() as conn:
+
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                SELECT
+                    device_id,
+                    hwid,
+                    name,
+                    status
+                FROM devices
+                WHERE user_id = %s
+                AND device_id = %s
+            """, (
+                user_id,
+                device_id
+            ))
+
+            device = cur.fetchone()
+
+            if not device:
+
+                return jsonify({
+                    "ok": False,
+                    "error":
+                        "device not found"
+                }), 404
+
+            cur.execute("""
+                SELECT plan
+                FROM subscriptions
+                WHERE user_id = %s
+                ORDER BY created_at ASC
+                LIMIT 1
+            """, (user_id,))
+
+            subscription = cur.fetchone()
+
+            if not subscription:
+
+                return jsonify({
+                    "ok": False,
+                    "error":
+                        "subscription not found"
+                }), 404
+
+            plan = subscription[0]
+            limit = device_limit(plan)
+
+            # -------------------------------------------------
+            # RESTORE
+            # -------------------------------------------------
+
+            cur.execute("""
+                UPDATE devices
+                SET
+                    status = 'active',
+                    last_seen = %s
+                WHERE user_id = %s
+                AND device_id = %s
+            """, (
+                now(),
+                user_id,
+                device_id
+            ))
+
+            cur.execute("""
+                SELECT COUNT(*)
+                FROM devices
+                WHERE user_id = %s
+                AND status = 'active'
+            """, (user_id,))
+
+            active_devices = cur.fetchone()[0]
+
+            conn.commit()
+
+    return jsonify({
+
+        "ok": True,
+
+        "restored": True,
+
+        "device_id":
+            device_id,
+
+        "user_id":
+            user_id,
+
+        "hwid":
+            device[1],
+
+        "name":
+            device[2],
+
+        "status":
+            "active",
+
+        "plan":
+            plan,
+
+        "active_devices":
+            active_devices,
+
+        "device_limit":
+            limit,
+
+        "blocked":
+            active_devices > limit
     })
 
 
