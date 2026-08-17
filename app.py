@@ -135,8 +135,8 @@ def init_db():
 def device_limit(plan):
 
     limits = {
-        "free": 1,
-        "vip": 5,
+        "free": 5,
+        "vip": 10,
         "dev": 999999
     }
 
