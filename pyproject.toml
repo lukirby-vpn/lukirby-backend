@@ -1,2 +1,11 @@
+[project]
+name = "lukirby-backend"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "Flask==3.1.2",
+    "psycopg[binary]==3.2.10"
+]
+
 [tool.vercel]
 entrypoint = "app:app"
