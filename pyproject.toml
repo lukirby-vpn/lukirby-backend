@@ -1,3 +1,2 @@
 [tool.vercel]
-entrypoint = "bot:app"
-
+entrypoint = "backend:app"
